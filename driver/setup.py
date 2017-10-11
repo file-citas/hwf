@@ -8,6 +8,7 @@ CLANG_SRC="cfe-" + LLVM_RELEASE_VER + ".src"
 COMPILERRT_SRC="compiler-rt-" + LLVM_RELEASE_VER + ".src"
 DR_CHECKER_GIT_URL="https://github.com/ucsb-seclab/dr_checker.git"
 DR_CHECKER_GIT_BRANCH="speedy"
+KERNEL_MSM_GIT_URL="https://android.googlesource.com/kernel/msm"
 
 def download(file):
     if not os.path.isfile(file):
@@ -33,6 +34,11 @@ def compile_llvm():
     os.chdir("..")
     os.chdir("..")
 
+def pull_kernel():
+    if not os.path.exists("msm"):
+        branch = "android-msm-marlin-3.18-nougat-mr2.3"
+        os.system("git clone -b " + branch + " --single-branch " + KERNEL_MSM_GIT_URL)
+
 def pull_dr_checker():
     if not os.path.exists("dr_checker"):
         os.system("git clone -b " + DR_CHECKER_GIT_BRANCH + " --single-branch " + DR_CHECKER_GIT_URL)
@@ -45,6 +51,7 @@ def main():
     untar(CLANG_SRC + ".tar.xz", CLANG_SRC, "llvm/tools/clang")
     untar(COMPILERRT_SRC + ".tar.xz", COMPILERRT_SRC, "llvm/projects/compiler-rt")
     compile_llvm()
+    pull_kernel()
     pull_dr_checker()
 
 if __name__ == "__main__":
