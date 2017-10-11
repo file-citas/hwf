@@ -24,7 +24,7 @@ def compile_llvm():
     if not os.path.isdir("install"):
         os.mkdir("install")
     install_dir = os.path.abspath("install")
-    os.chdir("llvm")
+    os.chdir("llvm-" + LLVM_RELEASE_VER)
     if not os.path.isdir("build"):
         os.mkdir("build")
     os.chdir("build")
