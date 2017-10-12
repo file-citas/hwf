@@ -1,5 +1,6 @@
 #include "llvm/Pass.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/Analysis/MemoryDependenceAnalysis.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
@@ -9,56 +10,91 @@
 using namespace llvm;
 
 namespace {
-struct SharedMemoryWrite : public ModulePass {
-  static char ID;
-  SharedMemoryWrite() : ModulePass(ID) {}
 
-  // TODO: Inter-procedural
-  StructType *getAllocatedType(Value* V) {
-    Type *Ty = V->getType();
-    while (CastInst *CI = dyn_cast<CastInst>(V)) {
+class SharedMemoryWrite : public FunctionPass {
+public:
+  static char ID;
+  SharedMemoryWrite() : FunctionPass(ID) {}
+
+  bool runOnFunction(Function &F) override;
+
+private:
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
+    AU.addRequired<MemoryDependenceWrapperPass>();
+    AU.setPreservesAll();
+  }
+};
+
+StructType *getAllocatedType(MemoryDependenceResults &MD, Value* V) {
+  Type *Ty = V->getType();
+
+  bool StopSearch = false;
+  while (!StopSearch) {
+    // Look through casts
+    if (CastInst *CI = dyn_cast<CastInst>(V)) {
       V = CI->getOperand(0);
       Ty = V->getType();
+      continue;
     }
-    return dyn_cast<StructType>(Ty);
+    // Look through store/load pairs
+    else if (LoadInst *LI = dyn_cast<LoadInst>(V)) {
+      MemDepResult Res = MD.getDependency(LI);
+      if (Res.isDef()) {
+        errs() << "DEF:";
+        Res.getInst()->dump();
+        if (StoreInst *SI = dyn_cast<StoreInst>(Res.getInst())) {
+          V = SI->getValueOperand();
+          Ty = V->getType();
+          continue;
+        }
+      }
+    }
+    // TODO: look through callers
+    else if (Argument* Arg = dyn_cast<Argument>(V)) {
+      Arg->getParent()->dump();
+    }
+    StopSearch = true;
+  }
+  return dyn_cast<StructType>(Ty);
+}
+
+bool SharedMemoryWrite::runOnFunction(Function &F) {
+  Module *M = F.getParent();
+  TypeFinder TF;
+  TF.run(*M, true /* onlyNamed */);
+
+  SmallSet<StructType *, 16> SharedTypes;
+  for (StructType* STy : TF) {
+    if (STy->getName().startswith("struct.hfi_cmd")) {
+      SharedTypes.insert(STy);
+    }
+    STy->dump();
   }
 
-  bool runOnModule(Module &M) override {
-    TypeFinder TF;
-    TF.run(M, true /* onlyNamed */);
-
-    SmallSet<StructType *, 16> SharedTypes;
-    for (StructType* STy : TF) {
-      if (STy->getName().startswith("struct.hfi_cmd")) {
-        SharedTypes.insert(STy);
+  MemoryDependenceResults &MD = getAnalysis<MemoryDependenceWrapperPass>().getMemDep();
+  for (BasicBlock &B: F) {
+    for (Instruction &I : B) {
+      Value *V = nullptr;
+      if (MemTransferInst *MTI = dyn_cast<MemTransferInst>(&I)) {
+        V = MTI->getRawSource();
       }
-      STy->dump();
-    }
+      else if (StoreInst* SI = dyn_cast<StoreInst>(&I)) {
+        V = SI->getValueOperand();
+      }
 
-    for (Function &F: M) {
-      for (BasicBlock &B: F) {
-        for (Instruction &I : B) {
-          Value *V = nullptr;
-          if (MemTransferInst *MTI = dyn_cast<MemTransferInst>(&I)) {
-            V = MTI->getRawSource();
-          }
-          else if (StoreInst* SI = dyn_cast<StoreInst>(&I)) {
-            V = SI->getValueOperand();
-          }
-
-          if (V != nullptr) {
-            if (StructType *STy = getAllocatedType(V)) {
-              if (SharedTypes.count(STy) > 0) {
-                I.dump();
-              }
-            }
+      if (V != nullptr) {
+        if (StructType *STy = getAllocatedType(MD, V)) {
+          if (SharedTypes.count(STy) > 0) {
+            I.dump();
           }
         }
       }
     }
-    return false;
   }
-};
+
+  return false;
+}
+
 } //end of anonymous namespace
 
 char SharedMemoryWrite::ID = 0;

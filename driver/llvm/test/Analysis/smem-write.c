@@ -5,7 +5,7 @@ struct hfi_cmd_fake {
   uint32_t size;
 };
 
-uint32_t smem;
+uint32_t smem[1024];
 
 __attribute__((noinline))
 void send_packet(uint8_t *pkt) {
@@ -14,7 +14,7 @@ void send_packet(uint8_t *pkt) {
 
 __attribute__((noinline))
 int main() {
-  smem = 1;
+  smem[0] = 1;
   struct hfi_cmd_fake pkt;
   pkt.size = 5;
   send_packet((uint8_t *)&pkt);

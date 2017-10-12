@@ -5,7 +5,7 @@ target triple = "x86_64-unknown-linux-gnu"
 
 %struct.hfi_cmd_fake = type { i32 }
 
-@smem = common global i32 0, align 4
+@smem = common global [1024 x i32] zeroinitializer, align 16
 
 ; Function Attrs: noinline nounwind optnone uwtable
 define void @send_packet(i8* %pkt) #0 {
@@ -13,7 +13,7 @@ entry:
   %pkt.addr = alloca i8*, align 8
   store i8* %pkt, i8** %pkt.addr, align 8
   %0 = load i8*, i8** %pkt.addr, align 8
-  call void @llvm.memcpy.p0i8.p0i8.i64(i8* bitcast (i32* @smem to i8*), i8* %0, i64 4, i32 1, i1 false)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* bitcast ([1024 x i32]* @smem to i8*), i8* %0, i64 4, i32 1, i1 false)
   ret void
 }
 
@@ -26,7 +26,7 @@ entry:
   %retval = alloca i32, align 4
   %pkt = alloca %struct.hfi_cmd_fake, align 4
   store i32 0, i32* %retval, align 4
-  store i32 1, i32* @smem, align 4
+  store i32 1, i32* getelementptr inbounds ([1024 x i32], [1024 x i32]* @smem, i64 0, i64 0), align 16
   %size = getelementptr inbounds %struct.hfi_cmd_fake, %struct.hfi_cmd_fake* %pkt, i32 0, i32 0
   store i32 5, i32* %size, align 4
   %0 = bitcast %struct.hfi_cmd_fake* %pkt to i8*
