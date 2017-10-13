@@ -9,7 +9,7 @@ uint32_t smem[1024];
 
 __attribute__((noinline))
 void send_packet(uint8_t *pkt) {
-  memcpy((uint8_t *)&smem, pkt, sizeof(uint32_t));
+  memcpy((uint8_t *)smem, pkt, sizeof(uint32_t));
 }
 
 __attribute__((noinline))
