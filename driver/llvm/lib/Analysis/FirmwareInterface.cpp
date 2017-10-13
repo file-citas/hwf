@@ -1,5 +1,6 @@
 #include "llvm/Pass.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/MemoryDependenceAnalysis.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/Function.h"
@@ -56,9 +57,11 @@ bool SharedMemoryWrite::runOnFunction(Function &F) {
           StringRef File = DL->getFilename();
           if (File.equals("smem-write.c") && Line == 12) {
             SMemWrite.insert(&I);
-            errs() << File << ":" << Line << " (OK)\n";
+            errs() << "[INFO] write to smem at " << File << ":" << Line << "\n";
           }
-          else if (File.equals("venus_hfi.c")) {
+          else if (File.endswith("venus_hfi.c") && (Line == 372 || Line == 375 || Line == 377)) {
+            SMemWrite.insert(&I);
+            errs() << "[INFO] write to smem at " << File << ":" << Line << "\n";
           }
         }
       }
@@ -80,7 +83,7 @@ public:
 };
 
 class ReachingDefinition : public FunctionPass {
-  ReachingDefinitionLocalResults RDef;
+  DenseMap<Function *, ReachingDefinitionLocalResults> RDef;
 
 public:
   static char ID;
@@ -88,7 +91,7 @@ public:
 
   bool runOnFunction(Function &F) override;
 
-  ReachingDefinitionLocalResults &getDef() { return RDef; }
+  ReachingDefinitionLocalResults getDef(Function *F) const { return RDef.lookup(F); }
 
 private:
   void getAnalysisUsage(AnalysisUsage &AU) const override {
@@ -134,18 +137,35 @@ Value *getDefinition(MemoryDependenceResults &MD, Value* V) {
     // Look through store/load pairs
     else if (LoadInst *LI = dyn_cast<LoadInst>(V)) {
       MemDepResult Res = MD.getDependency(LI);
-      if (Res.isDef()) {
-        errs() << "DEF:";
-        Res.getInst()->dump();
-        if (StoreInst *SI = dyn_cast<StoreInst>(Res.getInst())) {
+
+      // If it is defined in another block, try harder.
+      if (Res.isNonLocal()) {
+        SmallVector<NonLocalDepResult, 4> Deps;
+        MD.getNonLocalPointerDependency(LI, Deps);
+        if (Deps.size() == 1) {
+          Res = Deps[0].getResult();
+        }
+        else if (Deps.size() > 1) {
+          errs() << "[WARNING] Deps.size() > 1\n";
+          Res = Deps[0].getResult();
+        }
+      }
+
+      Instruction *I = Res.getInst();
+      if (I != nullptr) {
+        if (StoreInst *SI = dyn_cast<StoreInst>(I)) {
           V = SI->getValueOperand();
           continue;
         }
+        else if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
+          V = LI;
+          continue;
+        }
+        else {
+          errs() << "[WARNING] Instruction not handled: ";
+          I->dump();
+        }
       }
-    }
-    // TODO: look through callers
-    else if (Argument* Arg = dyn_cast<Argument>(V)) {
-      Arg->getParent()->dump();
     }
     StopSearch = true;
   }
@@ -167,24 +187,24 @@ bool ReachingDefinition::runOnFunction(Function &F) {
   }
   */
 
-  MemoryDependenceResults &MD = getAnalysis<MemoryDependenceWrapperPass>().getMemDep();
   SharedMemoryWriteResults &SMW = getAnalysis<SharedMemoryWrite>().getSMemWrite();
   for (Instruction *I : SMW.getInstructions()) {
+    if (I->getFunction() != &F) continue;
+
     Value *V = nullptr;
     if (MemTransferInst *MTI = dyn_cast<MemTransferInst>(I)) {
       V = MTI->getRawSource();
     }
-    else if (StoreInst* SI = dyn_cast<StoreInst>(I)) {
-      V = SI->getValueOperand();
-    }
 
     if (V != nullptr) {
+      MemoryDependenceResults &MD = getAnalysis<MemoryDependenceWrapperPass>().getMemDep();
       if (Value *Def = getDefinition(MD, V)) {
         if (isa<Argument>(Def)) {
           unsigned long i = 0;
           for (auto B = F.arg_begin(), E = F.arg_end(); B != E; ++B, ++i) {
             if (&(*B) == Def) {
-              RDef.setTainted(i);
+              RDef[&F].setTainted(i);
+              errs() << "[INFO] " << F.getName() << " is marked tainted.\n";
             }
           }
         }
@@ -202,12 +222,12 @@ bool ReachingDefinitionGlobal::runOnModule(Module &M) {
       for (Instruction &I : BB) {
         if (CallInst *CI = dyn_cast<CallInst>(&I)) {
           Function *Callee = CI->getCalledFunction();
-          if (!Callee->isDeclaration()) {
-            ReachingDefinitionLocalResults &RD = getAnalysis<ReachingDefinition>(*Callee).getDef();
+          if (Callee && !Callee->isDeclaration()) {
+            ReachingDefinitionLocalResults RD = getAnalysis<ReachingDefinition>(*Callee).getDef(Callee);
 
             for (unsigned i=0; i<Callee->arg_size(); ++i) {
               if (RD.isTainted(i)) {
-                errs() << "arg " << i << " of " << Callee->getName() << " is tainted!!\n";
+                errs() << "[INFO] arg " << i << " of " << Callee->getName() << " is tainted!!\n";
               }
             }
           }
