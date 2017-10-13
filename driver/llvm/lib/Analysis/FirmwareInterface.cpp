@@ -55,10 +55,12 @@ bool SharedMemoryWrite::runOnFunction(Function &F) {
         if (DL) {
           unsigned Line = DL->getLine();
           StringRef File = DL->getFilename();
-          if (File.equals("smem-write.c") && Line == 12) {
+          if ((File.endswith("smem-write.c") && Line == 12)
+              || (File.endswith("smem-write-byval.c") && Line == 8)) {
             SMemWrite.insert(&I);
             errs() << "[INFO] write to smem at " << File << ":" << Line << "\n";
           }
+          // msm/drivers/media/platform/msm/vidc
           else if (File.endswith("venus_hfi.c") && (Line == 372 || Line == 375 || Line == 377)) {
             SMemWrite.insert(&I);
             errs() << "[INFO] write to smem at " << File << ":" << Line << "\n";
@@ -115,6 +117,7 @@ public:
 
 private:
   void getAnalysisUsage(AnalysisUsage &AU) const override {
+    AU.addRequired<MemoryDependenceWrapperPass>();
     AU.addRequired<ReachingDefinition>();
     AU.setPreservesAll();
   }
@@ -157,9 +160,11 @@ Value *getDefinition(MemoryDependenceResults &MD, Value* V) {
           V = SI->getValueOperand();
           continue;
         }
-        else if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
-          V = LI;
-          continue;
+        else if (LoadInst *LI2 = dyn_cast<LoadInst>(I)) {
+          if (LI->getPointerOperand() && LI2->getPointerOperand()) {
+            V = LI2;
+            continue;
+          }
         }
         else {
           errs() << "[WARNING] Instruction not handled: ";
@@ -193,7 +198,10 @@ bool ReachingDefinition::runOnFunction(Function &F) {
 
     Value *V = nullptr;
     if (MemTransferInst *MTI = dyn_cast<MemTransferInst>(I)) {
-      V = MTI->getRawSource();
+      V = MTI->getRawSource(); // Pointer type
+    }
+    else if (StoreInst *SI = dyn_cast<StoreInst>(I)) {
+      V = SI->getValueOperand(); // Non-pointer type
     }
 
     if (V != nullptr) {
@@ -216,6 +224,7 @@ bool ReachingDefinition::runOnFunction(Function &F) {
 }
 
 bool ReachingDefinitionGlobal::runOnModule(Module &M) {
+  SmallVector<Instruction *, 32> Worklist;
   // TODO
   for (Function &F : M) {
     for (BasicBlock &BB : F) {
@@ -228,11 +237,36 @@ bool ReachingDefinitionGlobal::runOnModule(Module &M) {
             for (unsigned i=0; i<Callee->arg_size(); ++i) {
               if (RD.isTainted(i)) {
                 errs() << "[INFO] arg " << i << " of " << Callee->getName() << " is tainted!!\n";
+                Value *Arg = CI->getArgOperand(i);
+                if (Instruction *I = dyn_cast<Instruction>(Arg)) {
+                  Worklist.push_back(I);
+                }
+                else {
+                  errs() << "[DEBUG] arg is not an instruction.\n";
+                }
               }
             }
           }
         }
       }
+    }
+  }
+
+  while (!Worklist.empty()) {
+    Instruction *Use = Worklist.back();
+    Worklist.pop_back();
+    MemoryDependenceResults &MD = getAnalysis<MemoryDependenceWrapperPass>(*(Use->getFunction())).getMemDep();
+    Value *Def = getDefinition(MD, Use);
+    if (Def) {
+      errs() << "[INFO] possibly the def: ";
+      Def->dump();
+
+      // If not source, add to the queue.
+      if (!isa<Instruction>(Def)) continue;
+      Instruction *I = cast<Instruction>(Def);
+      if (isa<AllocaInst>(I)) continue;
+
+      Worklist.push_back(I);
     }
   }
   return false;
